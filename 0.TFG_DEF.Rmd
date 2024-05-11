@@ -1,0 +1,884 @@
+---
+title: "TFG - Técnicas Multivariantes de Clasificación y su Aplicación para la Identificación de Sucesos de Tipo Cuasielástico en el Experimento SBND"
+author: "José Antonio Rosano Calvillo"
+date: "`r Sys.Date()`"
+output:
+  html_document:
+    theme: cerulean
+    df_print: paged
+    toc: yes
+    toc_depth: 6
+    number_sections: yes
+    toc_float:
+      collapsed: yes
+      smooth_scroll: no
+---
+<style>
+.math {
+  font-size: 8.25pt;options(encoding = 'UTF-8')
+}
+</style>
+
+<div style="text-align: justify">
+
+# Preparación de los datos
+
+## Instalación de paquetes de R. Lectura de datos
+```{r warning=FALSE, message=FALSE}
+# Paquetes a usar
+library(summarytools) # Permite llamar a 'freq' y 'descr'
+library(ggplot2) # Permite llamar a 'ggplot'
+library(ggpubr) # Permite llamar a 'ggarrange'
+library(tidyverse) # Permite trabajar con las tuberías %>%
+library(ICSNP) # Permite llamar a 'HotellingsT2'
+library(caret) # Permite llamar a 'createDataPartition'
+library(reshape2) # Permite llamar a 'melt'
+library(MVN) # Permite llamar a 'mvn'
+library(psych) # Permite llamar a 'cortest.bartlett'
+library(biotools) # Permite llamar a 'boxM'
+library("pROC") # Permite llamar a 'roc'
+library(naivebayes) # Permite llamar a 'naive_bayes'
+library(class) # Permite llamar a 'knn'
+
+# Lectura de datos
+datos<-read.csv("data_QE.csv", header = TRUE,sep =",")
+```
+
+## Variables `QE` y `var_nuevosuc`
+```{r warning=FALSE, message=FALSE}
+attach(datos)
+
+# Se crea nueva variable de "datos" que marque si el suceso es señal o fondo
+QE = c()
+QE[(nuPDG_truth==14 | nuPDG_truth==-14) & ccnc_truth==0 & mode_truth==0] = "Señal"
+QE[(nuPDG_truth!=14 & nuPDG_truth!=-14) | ccnc_truth!=0 | mode_truth!=0] = "Fondo"
+
+# Se crea nueva variable de "datos" que marque si el suceso es nuevo (eventID distinto)
+var_nuevosuc = !duplicated(eventID)
+
+# Se integran las variables recodificadas en el dataframe
+datos$QE=QE
+datos$var_nuevosuc=var_nuevosuc
+
+detach(datos)
+```
+
+## SubDataframe de `datos`
+```{r warning=FALSE, message=FALSE}
+datos_red <- subset(datos, var_nuevosuc==TRUE, c(eventID:nShowers,QE,var_nuevosuc))
+```
+
+## Variables `maxtrack` y `maxshower`
+```{r warning=FALSE, message=FALSE}
+# Se crea nueva variable de "datos_red" que marque el máximo de "trcklength"
+aux <- datos %>%
+  group_by(eventID) %>%
+  summarise(maxtrack = max(trcklength))
+
+aux$maxtrack[aux$maxtrack == -1] = 0 # Cambiar los -1 por 0
+datos_red$maxtrack=aux$maxtrack # Añadir a datos_red
+
+# Se crea nueva variable de "datos_red" que marque el máximo de "shwlength"
+aux <- datos %>%
+  group_by(eventID) %>%
+  summarise(maxshower = max(shwlength))
+
+aux$maxshower[aux$maxshower == -1] = 0 # Cambiar los -1 por 0
+datos_red$maxshower=aux$maxshower # Añadir a datos_red
+```
+
+## Selección de Variables
+```{r warning=FALSE, message=FALSE}
+# Selección de variables tras estudio previo.
+# Quito los (0,0,0), cuya topología no ha podido reconstruirse y los nTracks == 0
+dat <- subset(datos_red, (nVertices + nTracks + nShowers != 0) & (nTracks!=0),
+              c(9,10,13,14,7,11))
+
+# Agrupo los valores menos frecuentes de las variables discretas
+aux<- (dat[,1]==0)*(0)+(dat[,1]==1)*(1)+(dat[,1]==2)*(2)+(dat[,1]==3)*(3)+(dat[,1]>3)*(4)
+dat$nTracks <- aux
+
+aux<- (dat[,2]==0)*(0)+(dat[,2]==1)*(1)+(dat[,2]==2)*(2)+(dat[,2]==3)*(3)+
+  (dat[,2]>3)*(4)
+dat$nShowers <- aux
+
+# Creo data frames solo de señal y de fondo
+dat.QE <- split(dat,dat$QE)
+```
+
+
+# Análisis Exploratorio de los Datos
+
+## Número de sucesos `Señal` y `Fondo`
+```{r}
+# En la muestra total (train.set + test.set):
+freq(dat$QE)
+```
+
+## Número de NAs
+```{r}
+# En la muestra total (train.set + test.set):
+colSums(is.na(dat[-6]))
+```
+
+## Variable ´nTracks´
+```{r}
+# Tabla de frecuencias
+freq(dat$nTracks)
+
+# Gráfico circular y de barras
+p1<-ggplot(dat,aes(x=factor(1),fill=factor(dat$nTracks)))+
+  geom_bar(color="black")+coord_polar("y")+labs(x="",y="nTracks")+
+  theme(legend.title = element_blank())
+p2<-ggplot(dat,aes(x=factor(1),fill=factor(dat$nTracks)))+
+  geom_bar(color="black")+labs(x="nTracks",y="")
+
+ggarrange(p1,p2,nrow = 1,ncol=2, common.legend = TRUE)
+
+# Histogramas, separando señal y fondo
+x <- dat.QE$Señal$nTracks
+p1 <- hist(x, breaks = seq(min(x)-1/2,max(x)+1/2), freq=FALSE, col="#51d1f666", border = "#51d1f6", main = "", xlab = "Número de Trazas", ylab = "") 
+legend("topright", legend=c("Señal","Fondo"), box.col = "white",  fill=c("#51d1f666","#cda4de66"))
+
+y <- dat.QE$Fondo$nTracks
+p2 <- hist(y, breaks = seq(min(y)-1/2,max(y)+1/2), freq=FALSE, col="#cda4de66", border = "#cda4de", add = TRUE)
+```
+
+## Variable ´nShowers´
+```{r}
+# Tabla de frecuencias
+freq(dat$nShowers)
+
+# Gráfico circular y de barras
+p1<-ggplot(dat,aes(x=factor(1),fill=factor(dat$nShowers)))+
+  geom_bar(color="black")+coord_polar("y")+labs(x="",y="nShowers")+
+  theme(legend.title = element_blank())
+p2<-ggplot(dat,aes(x=factor(1),fill=factor(dat$nShowers)))+
+  geom_bar(color="black")+labs(x="nShowers",y="")
+
+ggarrange(p1,p2,nrow = 1,ncol=2, common.legend = TRUE)
+
+# Histogramas, separando señal y fondo
+x <- dat.QE$Señal$nShowers
+p1 <- hist(x, breaks = seq(min(x)-1/2,max(x)+1/2), freq=FALSE, col="#51d1f666", border = "#51d1f6", main = "", xlab = "Número de Cascadas", ylab = "") 
+legend("topright", legend=c("Señal","Fondo"), box.col = "white",  fill=c("#51d1f666","#cda4de66"))
+
+y <- dat.QE$Fondo$nShowers
+p2 <- hist(y, breaks = seq(min(y)-1/2,max(y)+1/2), freq=FALSE, col="#cda4de66", border = "#cda4de", add = TRUE)
+```
+
+## Variable `maxtrack`
+```{r}
+descr(dat$maxtrack)
+
+ggplot(data = dat, aes(x = maxtrack, fill = QE)) +
+      geom_density(alpha = 0.5) + scale_fill_manual(values = c("#cda4de66", "#51d1f666")) + 
+      labs(x="Longitud de Traza Máxima (cm)", y="") + xlim(0,500)
+```
+
+## Variable `maxshower`
+```{r}
+descr(dat$maxshower)
+
+p2 <- ggplot(data = dat, aes(x = maxshower, fill = QE)) +
+      geom_density(alpha = 0.5) + scale_fill_manual(values = c("#cda4de66", "#51d1f666")) + 
+      labs(x="Longitud de Cascada Máxima (cm)", y="") + xlim(0,75)
+p2
+
+#ggarrange(p1,p2, nrow = 2, ncol=1, common.legend = TRUE)
+```
+
+## Variable ´nHits´
+```{r}
+descr(dat$nHits)
+
+ggplot(data = dat, aes(x = nHits, fill = QE)) +
+      geom_density(alpha = 0.5) + scale_fill_manual(values = c("#cda4de66", "#51d1f666")) + 
+      labs(x="Número de Impactos", y="") + xlim(0,6000)
+```
+
+
+# Análisis Exploratorio 2D
+
+## Scatter Plot, todas las variables
+```{r message=FALSE, warning=FALSE}
+pairs(x = dat[, -6], lower.panel=NULL,
+      col = c("#cda4de","#51d1f6")[factor(dat$QE)],
+      pch = c(4,19)[factor(dat$QE)])
+```
+
+
+
+# Comprobación de Hipótesis
+
+## Valores Atípicos (Outliers)
+
+**Univariantes**
+```{r}
+# Boxplots de todas las variables juntas
+boxplot(scale(dat[-6]),main="Datos con Outliers", 
+        xlab="Variables explicativas estandarizadas", ylab="", col=c(2:5))
+```
+
+Se observa que la mayoría de outliers de `maxshower` son `Fondo`, lo cual es una información relevante para la clasificación. Se decide por tanto no eliminarlos ni sustituirlos por su media a pesar de los posibles errores que pueda conllevar en las técnicas de clasificación que se utilizarán posteriormente.
+
+Esto no ocurre con la variable `maxtrack`, donde los outliers parecen ser indistintamente `Señal` o `Fondo`. Para esta variable, se pensó en sustituir los outliers por la media, pero ante los malos resultados no se hizo.
+```{r include=FALSE}
+# Función que modifica los outliers por la media de la variable
+outlier<-function(data,na.rm=T){
+
+  H<-1.5*IQR(data)
+  data[data<quantile(data,0.25,na.rm = T)-H]<-NA
+  data[data>quantile(data,0.75, na.rm = T)+H]<-NA
+  data[is.na(data)]<-mean(data, na.rm = T)
+  H<-1.5*IQR(data)
+
+  if (TRUE %in% (data<quantile(data,0.25,na.rm = T)-H) |
+      TRUE %in% (data>quantile(data,0.75,na.rm = T)+H)) 
+    outlier(data)
+  else 
+    return(data)
+}
+
+# Creo data frame sin outliers, pero uso el original
+dat.so<-dat
+dat.so$nTracks<-outlier(dat$nTracks)
+dat.so$nShowers<-outlier(dat$nShowers)
+dat.so$maxtrack<-outlier(dat$maxtrack)
+dat.so$maxshower<-outlier(dat$maxshower)
+
+# Nuevo boxplot sin outliers
+#boxplot(dat.so[-6],main="Datos modificando Outliers", 
+#        xlab="Variables explicativas estandarizadas", ylab="", col=c(2:6))
+```
+
+```{r eval=FALSE, include=FALSE}
+#**Multivariantes**
+# Da problemas. Data frame demasiado grande, y excesiva presencia de outliers
+mvn(data = dat[1:150,-6], mvnTest = "hz", multivariateOutlierMethod = "quan")
+```
+
+## Normalidad Univariante
+
+### Histogramas
+```{r}
+# Histogramas de cada variable separando por QE y añadiendo una normal
+par(mfcol = c(2,5))
+for (k in c(1:5)) {
+  j0 <- names(dat)[k]
+  x0 <- seq(min(dat[, k]), max(dat[, k]), le = 50)
+  for (i in 1:2) {
+    i0 <- levels(as.factor(dat$QE))[i]
+    x <- dat[as.factor(dat$QE) == i0, j0]
+    hist(x, proba = T, col = grey(0.8), main = paste(i0),xlab = j0)
+    lines(x0, dnorm(x0, mean(x), sd(x)), col = "blue", lwd = 2)
+  }
+}
+```
+
+### Qqplots
+```{r}
+# Qqplots de cada variable separando por QE
+par(mfcol=c(2,6))
+for (k in c(1:5)) {
+  j0 <- names(dat)[k]
+  x0 <- seq(min(dat[, k]), max(dat[, k]), le = 50)
+  for (i in 1:2) {
+    i0 <- levels(as.factor(dat$QE))[i]
+    x <- dat[as.factor(dat$QE) == i0, j0]
+    qqnorm(x, main = paste("y", i0, j0), pch = 19, col = i + 1)
+    qqline(x)
+  }
+}
+```
+
+### Test Normalidad Univariante (Shapiro-Wilks)
+```{r message=FALSE}
+set.seed(2024)
+
+# Se toman solo 35000 observaciones de datos_tidy para poder utilizar shapiro.test()
+datos_tidy <- melt(dat, value.name = "value")
+datos_tidy <- datos_tidy[sample(1:nrow(datos_tidy),35000),]
+
+# cambiar variable a sample de 5000
+resultados_shapiro <- aggregate(value ~ QE + variable, data = datos_tidy,
+                               FUN = function(x) shapiro.test(x)$p.value)
+print(resultados_shapiro)
+```
+
+Este resultado (no del todo preciso) refleja una ausencia de normalidad univariante (p-valor<0.05)
+
+## Normalidad Multivariante
+
+```{r}
+# Royston multivariate normality test (solo 2000 obs. de dat)
+royston_test <- mvn(data = dat[1:2000,-6], mvnTest = "royston", multivariatePlot = "qq")
+royston_test$multivariateNormality
+```
+
+```{r}
+# Henze-Zirkler multivariate normality test (solo 5000 obs. de dat)
+hz_test <- mvn(data = dat[1:5000,-6], mvnTest = "hz")
+hz_test$multivariateNormality
+```
+
+## Ausencia de Multicolinealidad
+```{r warning=FALSE, message=FALSE}
+# Correlación a nivel de la muestra
+
+# Matriz de correlación
+cor(dat[-6])
+
+# Determinante
+sprintf("Determinante de la matriz de correlación: %f", det(cor(dat[-6])))
+
+```
+
+```{r warning=FALSE, message=FALSE}
+# Correlación a nivel poblacional
+
+# Test de Esfericidad de Bartlett
+cortest.bartlett(cor(scale(dat[-6])))
+
+```
+
+Ambos métodos reflejan una importante correlación entre los datos.
+
+## Homocedasticidad
+```{r}
+boxM(data = dat[, 1:5], grouping = dat[,6])
+```
+
+No puede asumirse la homogeneidad de las matrices de covarianza (p-valor<0.05)
+
+## Medias poblacionales distintas
+```{r}
+# Univariante
+#t.test(nTracks ~ QE, data = dat)
+#t.test(nShowers ~ QE, data = dat)
+#t.test(maxtrack ~ QE, data = dat)
+#t.test(maxshower ~ QE, data = dat)
+#t.test(nHits ~ QE, data = dat)
+
+# Multivariante
+HotellingsT2(dat.QE$Señal[,-6],dat.QE$Fondo[,-6])
+```
+
+
+
+# Técnicas Multivariantes
+
+## Partición de los Datos
+```{r warning=FALSE, message=FALSE}
+# Índice de Entrenamiento ("Training Ids") para hacer una Partición de los Datos
+# Se recodifican los niveles "Señal" y "Fondo a 1 y 0
+set.seed(2001)
+t.ids <- createDataPartition(dat$QE, p = 0.8, list = F)
+
+train.set <- dat[t.ids,] %>%
+         mutate(QE = recode(QE,"Fondo" = 0, "Señal" = 1))
+test.set <- dat[-t.ids,] %>%
+         mutate(QE = recode(QE,"Fondo" = 0, "Señal" = 1))
+
+# Función que devuelve la matriz de confusión con ("Señal","Señal") en la 1ª casilla
+# m es la matriz de confusión con ("Fondo","Fondo") en la 1ª casilla
+c.matrix <- function(m){
+  colnames(m) <- c(colnames(m)[2],colnames(m)[1])
+  rownames(m) <- c(rownames(m)[2],rownames(m)[1])
+  m[1:4] <- c(m[4],m[3],m[2],m[1])
+  return(m)
+}
+
+# Función que devuelve medidas del rendimiento de un clasificador
+# m es la matriz de confusión con ("Señal","Señal") en la 1ª casilla
+rend <- function(m){
+  TPR <- m[1]/(m[1]+m[3])
+  TNR <- m[4]/(m[4]+m[2])
+  PPV <- m[1]/(m[1]+m[2])
+  NPV <- m[4]/(m[4]+m[3])
+  effpur <- TPR*PPV
+  ACC <- (m[1]+m[4])/sum(m)
+  prevalencia <- (m[1]+m[3])/sum(m)
+  
+  return(c(eficiencia=TPR,especificidad=TNR,pureza=PPV,
+              VPredNeg=NPV,effpur=effpur,exactitud=ACC,
+              prevalencia=prevalencia))
+}
+```
+
+## Regresión Logística
+```{r}
+plot.lr <- function(var,nombre){
+  # Ajuste de un modelo logístico.
+  modelo_logistico <- glm(QE ~ var, data = train.set, family = "binomial")
+  
+  # Representación gráfica del modelo.
+  ggplot(data = train.set, aes(x = var, y = QE)) +
+  geom_point(aes(color = as.factor(QE)), shape = 1) + 
+  stat_function(fun = function(x){predict(modelo_logistico,
+               newdata = data.frame(var = x),type = "response")}) +
+  theme_bw() +labs(title = "Regresión logística",y = "Probabilidad QE",
+                   x = nombre) +
+  theme(legend.position = "none")
+}
+
+p1 <- plot.lr(train.set$nTracks,"nTracks")
+p2 <- plot.lr(train.set$nShowers,"nShowers")
+p3 <- plot.lr(train.set$maxtrack,"maxtrack")
+p4 <- plot.lr(train.set$maxshower,"maxshower")
+p5 <- plot.lr(train.set$nHits,"nHits")
+
+ggarrange(p1,p2,p3,p4,p5, nrow = 2, ncol=3)
+```
+
+
+```{r, warning=FALSE}
+# Se entrena el modelo
+modelo.lr <- glm(QE ~ ., data = train.set, family = "binomial")
+summary(modelo.lr)
+cat("-------------------------------------------------\n")
+
+# odds ratios y 95% CI ( media +- 1.96*s/sqrt(n), con n=1 )
+exp(cbind(OR = coef(modelo.lr), confint.default(modelo.lr)))
+```
+
+```{r}
+# Curva ROC (Método 1)
+par(pty = "s") # Para que la gráfica sea cuadrada (square)
+
+aux <- predict(modelo.lr, newdata = train.set,type = "response")
+r <- multiclass.roc(train.set$QE,aux,percent=T)
+r1 <- r$rocs[[1]]
+plot.roc(r1,print.auc = T,auc.polygon = T,max.auc.polygon = T,
+         auc.polygon.col = "lightblue",print.thres = T,main = "Curva ROC: LR",
+         col = "#377eb8", lwd = 2.5, xlab = "Especificidad (%)",
+         ylab = "Eficiencia (%)")
+
+# Mejor punto de corte
+sprintf("Mejor punto de corte: %1.4f",coords(r1, "best",transpose=F)$threshold)
+
+# Curva ROC (Método 2)
+#par(pty = "s") # square
+#roc(train.set$QE, modelo.lr$fitted.values, plot = TRUE, legacy.axes = TRUE,
+#    percent = TRUE, xlab = "Porcentaje Falsos positivos",
+#    ylab = "Porcentaje verdaderos positivos", col = "#377eb8", lwd = 2,
+#    print.auc = TRUE)
+```
+
+Se usa el punto de corte óptimo obtenido con la curva ROC.
+```{r, warning=FALSE}
+# Se usa con test.set y se crea la matriz de confusión
+pred <- predict(modelo.lr, newdata = test.set,type = "response")
+pred <- ifelse(pred > 0.4341, yes = 1, no = 0)
+
+print("Matriz de confusión:")
+cm <- table(test.set$QE, pred, dnn = c("Valor Real", "Valor Predicho"))
+cm <- c.matrix(cm); cm
+cat("-------------------------------------------------\n")
+
+# Compruebo que tenga el mismo número de datos que test.set
+#print("¿Hay tantas observaciones como nrow(test.set)?")
+#sum(cm)==nrow(test.set)
+#cat("-------------------------------------------------\n")
+
+# Medidas del rendimiento de un clasificador
+rend(cm)
+
+# Método 2
+#confusionMatrix(data = as.factor(pred), reference = as.factor(test.set$QE),positive = "1")
+```
+
+Usando 0.5 como punto de corte:
+```{r, warning=FALSE}
+# Se usa con test.set y se crea la matriz de confusión
+pred <- predict(modelo.lr, newdata = test.set,type = "response")
+pred <- ifelse(pred > 0.5, yes = 1, no = 0)
+
+print("Matriz de confusión:")
+cm <- table(test.set$QE, pred, dnn = c("Valor Real", "Valor Predicho"))
+cm <- c.matrix(cm); cm
+cat("-------------------------------------------------\n")
+
+# Compruebo que tenga el mismo número de datos que test.set
+#print("¿Hay tantas observaciones como nrow(test.set)?")
+#sum(cm)==nrow(test.set)
+#cat("-------------------------------------------------\n")
+
+# Medidas del rendimiento de un clasificador
+rend(cm)
+```
+
+
+## Análisis Discriminante Lineal
+```{r}
+# Se entrena el modelo
+modelo.lda <- lda(QE ~ ., data = train.set)
+coef(modelo.lda)
+```
+
+```{r}
+# Curva ROC
+par(pty = "s") # Para que la gráfica sea cuadrada (square)
+
+aux <- predict(modelo.lda, newdata = train.set)
+r <- multiclass.roc(train.set$QE,as.numeric(aux$class),percent=T)
+r1 <- r$rocs[[1]]
+plot.roc(r1,print.auc = T,auc.polygon = T,max.auc.polygon = T,
+         auc.polygon.col = "lightblue",print.thres = T,main = "Curva ROC: LDA",
+         col = "#377eb8", lwd = 2.5, xlab = "Especificidad (%)",
+         ylab = "Eficiencia (%)")
+
+# Mejor punto de corte
+sprintf("Mejor punto de corte: %1.4f",coords(r1, "best",transpose=F)$threshold)
+```
+
+Recordar que lda implementa el método bayesiano, así que asigna como señal/fondo a aquel suceso con mayor probabilidad a posteriori. No incluyo entonces el punto de corte óptimo.
+```{r}
+# Se usa con test.set y se crea la matriz de confusión
+pred <- predict(object = modelo.lda, newdata = test.set)
+cm <- confusionmatrix(test.set$QE, pred$class)
+cm <- c.matrix(cm); cm
+cat("-------------------------------------------------\n")
+
+# Compruebo que tenga el mismo número de datos que test.set
+#print("¿Hay tantas observaciones como nrow(test.set)?")
+#sum(cm)==nrow(test.set)
+#cat("-------------------------------------------------\n")
+
+# Medidas del rendimiento de un clasificador (Método 1)
+rend(cm)
+
+# Método 2
+#confusionMatrix(data = pred$class, reference = as.factor(test.set$QE),positive = "1")
+
+# Método 3
+#caret::confusionMatrix(table(pred$class, test.set$QE), positive = "1")
+```
+
+
+## Análisis Discriminante Cuadrático
+```{r}
+# Se entrena el modelo (no da los coeficientes)
+modelo.qda <- qda(QE ~ ., data = train.set)
+```
+
+```{r}
+# Curva ROC
+par(pty = "s") # Para que la gráfica sea cuadrada (square)
+
+aux <- predict(modelo.qda, newdata = train.set)
+r <- multiclass.roc(train.set$QE,as.numeric(aux$class),percent=T)
+r1 <- r$rocs[[1]]
+plot.roc(r1,print.auc = T,auc.polygon = T,max.auc.polygon = T,
+         auc.polygon.col = "lightblue",print.thres = T,main = "Curva ROC: QDA",
+         col = "#377eb8", lwd = 2.5, xlab = "Especificidad (%)",
+         ylab = "Eficiencia (%)")
+
+# Mejor punto de corte
+sprintf("Mejor punto de corte: %1.4f",coords(r1, "best",transpose=F)$threshold)
+```
+
+No incluyo el punto de corte óptimo, como en el caso del LDA.
+```{r}
+# Se usa con test.set y se crea la matriz de confusión
+pred <- predict(object = modelo.qda, newdata = test.set)
+cm <- confusionmatrix(test.set$QE, pred$class)
+cm <- c.matrix(cm); cm
+cat("-------------------------------------------------\n")
+
+# Compruebo que tenga el mismo número de datos que test.set
+#print("¿Hay tantas observaciones como nrow(test.set)?")
+#sum(cm)==nrow(test.set)
+#cat("-------------------------------------------------\n")
+
+# Medidas del rendimiento de un clasificador
+rend(cm)
+```
+
+
+## Naïve Bayes
+
+### Sin Laplace Smoothing
+```{r}
+train.set.f <- within(train.set, QE <- as.factor(QE))
+test.set.f <- within(test.set, QE <- as.factor(QE))
+
+# Se entrena el modelo
+modelo.nb <- naive_bayes(QE ~ ., data=train.set.f) # Sin Laplace Smoothing (laplace = 1)
+```
+
+```{r, warning=FALSE}
+# Curva ROC
+par(pty = "s") # Para que la gráfica sea cuadrada (square)
+
+aux <- predict(modelo.nb, newdata = train.set.f)
+r <- multiclass.roc(train.set.f$QE,as.numeric(aux),percent=T)
+r1 <- r$rocs[[1]]
+plot.roc(r1,print.auc = T,auc.polygon = T,max.auc.polygon = T,
+         auc.polygon.col = "lightblue",print.thres = T,main = "Curva ROC: NB",
+         col = "#377eb8", lwd = 2.5, xlab = "Especificidad (%)",
+         ylab = "Eficiencia (%)")
+
+# Mejor punto de corte
+sprintf("Mejor punto de corte: %1.4f",coords(r1, "best",transpose=F)$threshold)
+```
+
+```{r, warning=FALSE}
+# Se usa con test.set y se crea la matriz de confusión
+pred <- predict(object = modelo.nb, newdata = test.set.f)
+cm <- confusionmatrix(test.set.f$QE, pred)
+cm <- c.matrix(cm); cm
+cat("-------------------------------------------------\n")
+
+# Compruebo que tenga el mismo número de datos que test.set
+#print("¿Hay tantas observaciones como nrow(test.set)?")
+#sum(cm)==nrow(test.set)
+#cat("-------------------------------------------------\n")
+
+# Medidas del rendimiento de un clasificador
+rend(cm)
+
+# Método 2
+#confusionMatrix(data = pred, reference = test.set.f$QE, positive = "1")
+```
+
+
+### Con Laplace Smoothing
+```{r}
+train.set.f <- within(train.set, QE <- as.factor(QE))
+test.set.f <- within(test.set, QE <- as.factor(QE))
+
+# Se entrena el modelo
+modelo.nb2 <- naive_bayes(QE ~ ., data=train.set.f, laplace = 1) # Con Laplace Smoothing (laplace = 1)
+```
+
+```{r, warning=FALSE}
+# Curva ROC
+par(pty = "s") # Para que la gráfica sea cuadrada (square)
+
+aux <- predict(modelo.nb2, newdata = train.set.f)
+r <- multiclass.roc(train.set.f$QE,as.numeric(aux),percent=T)
+r1 <- r$rocs[[1]]
+plot.roc(r1,print.auc = T,auc.polygon = T,max.auc.polygon = T,
+         auc.polygon.col = "lightblue",print.thres = T,main = "Curva ROC: NB-LS",
+         col = "#377eb8", lwd = 2.5, xlab = "Especificidad (%)",
+         ylab = "Eficiencia (%)")
+
+# Mejor punto de corte
+sprintf("Mejor punto de corte: %1.4f",coords(r1, "best",transpose=F)$threshold)
+```
+
+```{r, warning=FALSE}
+# Se usa con test.set y se crea la matriz de confusión
+pred <- predict(object = modelo.nb2, newdata = test.set.f)
+cm <- confusionmatrix(test.set.f$QE, pred)
+cm <- c.matrix(cm); cm
+cat("-------------------------------------------------\n")
+
+# Compruebo que tenga el mismo número de datos que test.set
+#print("¿Hay tantas observaciones como nrow(test.set)?")
+#sum(cm)==nrow(test.set)
+#cat("-------------------------------------------------\n")
+
+# Medidas del rendimiento de un clasificador
+rend(cm)
+
+# Método 2
+#confusionMatrix(data = pred, reference = test.set.f$QE, positive = "1")
+```
+
+Se observa que el resultado es análogo utilizando Laplace Smoothing o no.
+
+
+## k Nearest Neighbors
+```{r}
+# Se normalizan las variables
+train.set.n <- as.data.frame(cbind(scale(train.set[-6]),train.set$QE))
+test.set.n <- as.data.frame(cbind(scale(test.set[-6]),test.set$QE))
+```
+
+
+### Selección del hiperparámetro k
+```{r}
+# Área bajo la curva ROC
+par(pty = "s") # Para que la gráfica sea cuadrada (square)
+
+aux <- pred <- knn(train.set.n[,-6],train.set.n[,-6], train.set.n[,6], k=1)
+r <- multiclass.roc(train.set.n[[6]],as.numeric(aux),percent=T)
+r1 <- r$rocs[[1]]
+auc(r1)
+
+aux <- pred <- knn(train.set.n[,-6],train.set.n[,-6], train.set.n[,6], k=3)
+r <- multiclass.roc(train.set.n[[6]],as.numeric(aux),percent=T)
+r1 <- r$rocs[[1]]
+auc(r1)
+
+aux <- pred <- knn(train.set.n[,-6],train.set.n[,-6], train.set.n[,6], k=5)
+r <- multiclass.roc(train.set.n[[6]],as.numeric(aux),percent=T)
+r1 <- r$rocs[[1]]
+auc(r1)
+
+aux <- pred <- knn(train.set.n[,-6],train.set.n[,-6], train.set.n[,6], k=7)
+r <- multiclass.roc(train.set.n[[6]],as.numeric(aux),percent=T)
+r1 <- r$rocs[[1]]
+auc(r1)
+
+aux <- pred <- knn(train.set.n[,-6],train.set.n[,-6], train.set.n[,6], k=9)
+r <- multiclass.roc(train.set.n[[6]],as.numeric(aux),percent=T)
+r1 <- r$rocs[[1]]
+auc(r1)
+
+aux <- pred <- knn(train.set.n[,-6],train.set.n[,-6], train.set.n[,6], k=11)
+r <- multiclass.roc(train.set.n[[6]],as.numeric(aux),percent=T)
+r1 <- r$rocs[[1]]
+auc(r1)
+
+aux <- pred <- knn(train.set.n[,-6],train.set.n[,-6], train.set.n[,6], k=13)
+r <- multiclass.roc(train.set.n[[6]],as.numeric(aux),percent=T)
+r1 <- r$rocs[[1]]
+auc(r1)
+
+aux <- pred <- knn(train.set.n[,-6],train.set.n[,-6], train.set.n[,6], k=15)
+r <- multiclass.roc(train.set.n[[6]],as.numeric(aux),percent=T)
+r1 <- r$rocs[[1]]
+auc(r1)
+
+aux <- pred <- knn(train.set.n[,-6],train.set.n[,-6], train.set.n[,6], k=17)
+r <- multiclass.roc(train.set.n[[6]],as.numeric(aux),percent=T)
+r1 <- r$rocs[[1]]
+auc(r1)
+
+aux <- pred <- knn(train.set.n[,-6],train.set.n[,-6], train.set.n[,6], k=19)
+r <- multiclass.roc(train.set.n[[6]],as.numeric(aux),percent=T)
+r1 <- r$rocs[[1]]
+auc(r1)
+
+aux <- pred <- knn(train.set.n[,-6],train.set.n[,-6], train.set.n[,6], k=21)
+r <- multiclass.roc(train.set.n[[6]],as.numeric(aux),percent=T)
+r1 <- r$rocs[[1]]
+auc(r1)
+```
+
+```{r}
+# Validación del Modelo
+pred <- knn(train.set.n[,-6],test.set.n[,-6], train.set.n[,6], k=1)
+cm <- confusionmatrix(test.set.n[[6]], pred)
+cm <- c.matrix(cm)
+rend(cm)
+
+pred <- knn(train.set.n[,-6],test.set.n[,-6], train.set.n[,6], k=3)
+cm <- confusionmatrix(test.set.n[[6]], pred)
+cm <- c.matrix(cm)
+rend(cm)
+
+pred <- knn(train.set.n[,-6],test.set.n[,-6], train.set.n[,6], k=5)
+cm <- confusionmatrix(test.set.n[[6]], pred)
+cm <- c.matrix(cm)
+rend(cm)
+
+pred <- knn(train.set.n[,-6],test.set.n[,-6], train.set.n[,6], k=7)
+cm <- confusionmatrix(test.set.n[[6]], pred)
+cm <- c.matrix(cm)
+rend(cm)
+
+pred <- knn(train.set.n[,-6],test.set.n[,-6], train.set.n[,6], k=9)
+cm <- confusionmatrix(test.set.n[[6]], pred)
+cm <- c.matrix(cm)
+rend(cm)
+
+pred <- knn(train.set.n[,-6],test.set.n[,-6], train.set.n[,6], k=11)
+cm <- confusionmatrix(test.set.n[[6]], pred)
+cm <- c.matrix(cm)
+rend(cm)
+
+pred <- knn(train.set.n[,-6],test.set.n[,-6], train.set.n[,6], k=13)
+cm <- confusionmatrix(test.set.n[[6]], pred)
+cm <- c.matrix(cm)
+rend(cm)
+
+pred <- knn(train.set.n[,-6],test.set.n[,-6], train.set.n[,6], k=15)
+cm <- confusionmatrix(test.set.n[[6]], pred)
+cm <- c.matrix(cm)
+rend(cm)
+
+pred <- knn(train.set.n[,-6],test.set.n[,-6], train.set.n[,6], k=17)
+cm <- confusionmatrix(test.set.n[[6]], pred)
+cm <- c.matrix(cm)
+rend(cm)
+
+pred <- knn(train.set.n[,-6],test.set.n[,-6], train.set.n[,6], k=19)
+cm <- confusionmatrix(test.set.n[[6]], pred)
+cm <- c.matrix(cm)
+rend(cm)
+
+pred <- knn(train.set.n[,-6],test.set.n[,-6], train.set.n[,6], k=21)
+cm <- confusionmatrix(test.set.n[[6]], pred)
+cm <- c.matrix(cm)
+rend(cm)
+```
+
+### Implementación del algoritmo
+```{r}
+# Normalizando las variables
+
+# Se entrena el modelo, se usa con test.set y se crea la matriz de confusión
+pred <- knn(train.set.n[,-6],test.set.n[,-6], train.set.n[,6], k=21)
+cm <- confusionmatrix(test.set.n[[6]], pred)
+cm <- c.matrix(cm); cm
+cat("-------------------------------------------------\n")
+
+# Compruebo que tenga el mismo número de datos que test.set
+#print("¿Hay tantas observaciones como nrow(test.set)?")
+#sum(cm)==nrow(test.set.n)
+#cat("-------------------------------------------------\n")
+
+# Medidas del rendimiento de un clasificador (Método 1)
+rend(cm)
+
+# Método 2
+#confusionMatrix(data = pred, reference = as.factor(test.set.n[[7]]),positive = "1")
+```
+
+```{r}
+# Curva ROC
+par(pty = "s") # Para que la gráfica sea cuadrada (square)
+
+aux <- pred <- knn(train.set.n[,-6],train.set.n[,-6], train.set.n[,6], k=21)
+r <- multiclass.roc(train.set.n[[6]],as.numeric(aux),percent=T)
+r1 <- r$rocs[[1]]
+plot.roc(r1,print.auc = T,auc.polygon = T,max.auc.polygon = T,
+         auc.polygon.col = "lightblue",print.thres = T,main = "Curva ROC: kNN",
+         col = "#377eb8", lwd = 2.5, xlab = "Especificidad (%)",
+         ylab = "Eficiencia (%)")
+
+# Mejor punto de corte
+sprintf("Mejor punto de corte: %1.4f",coords(r1, "best",transpose=F)$threshold)
+```
+
+```{r}
+# Sin normalizar las variables
+
+# Se entrena el modelo, se usa con test.set y se crea la matriz de confusión
+pred <- knn(train.set[,-6],test.set[,-6], train.set[,6], k=21)
+cm <- confusionmatrix(test.set$QE, pred)
+cm <- c.matrix(cm); cm
+cat("-------------------------------------------------\n")
+
+# Medidas del rendimiento de un clasificador (Método 1)
+rend(cm)
+
+# Curva ROC
+par(pty = "s") # Para que la gráfica sea cuadrada (square)
+
+aux <- pred <- knn(train.set[,-6],train.set[,-6], train.set[,6], k=21)
+r <- multiclass.roc(train.set$QE,as.numeric(aux),percent=T)
+r1 <- r$rocs[[1]]
+plot.roc(r1,print.auc = T,auc.polygon = T,max.auc.polygon = T,
+         auc.polygon.col = "lightblue",print.thres = T,main = "Curva ROC: kNN-SN",
+         col = "#377eb8", lwd = 2.5, xlab = "Especificidad (%)",
+         ylab = "Eficiencia (%)")
+
+# Mejor punto de corte
+sprintf("Mejor punto de corte: %1.4f",coords(r1, "best",transpose=F)$threshold)
+```
+
