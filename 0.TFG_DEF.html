@@ -11,7 +11,7 @@
 
 <meta name="author" content="José Antonio Rosano Calvillo" />
 
-<meta name="date" content="2024-05-09" />
+<meta name="date" content="2024-05-12" />
 
 <title>TFG - Técnicas Multivariantes de Clasificación y su Aplicación para la Identificación de Sucesos de Tipo Cuasielástico en el Experimento SBND</title>
 
@@ -2754,7 +2754,7 @@ border-radius: 0px;
 Clasificación y su Aplicación para la Identificación de Sucesos de Tipo
 Cuasielástico en el Experimento SBND</h1>
 <h4 class="author">José Antonio Rosano Calvillo</h4>
-<h4 class="date">2024-05-09</h4>
+<h4 class="date">2024-05-12</h4>
 
 </div>
 
@@ -3326,6 +3326,31 @@ exp(cbind(OR = coef(modelo.lr), confint.default(modelo.lr)))</code></pre>
 ## maxtrack    1.0228798 1.0221325 1.0236277
 ## maxshower   1.0042780 1.0032084 1.0053488
 ## nHits       0.9971164 0.9970075 0.9972253</code></pre>
+<p>Aplicando el método de selección paso a paso (stepwise), se confirma
+el uso de las variables previamente seleccionadas:</p>
+<pre class="r"><code># Método step-wise
+step(modelo.lr,direction = &quot;both&quot;)</code></pre>
+<pre><code>## Start:  AIC=61094.39
+## QE ~ nTracks + nShowers + maxtrack + maxshower + nHits
+## 
+##             Df Deviance   AIC
+## &lt;none&gt;            61082 61094
+## - maxshower  1    61150 61160
+## - nTracks    1    61604 61614
+## - nShowers   1    63061 63071
+## - nHits      1    64455 64465
+## - maxtrack   1    65867 65877</code></pre>
+<pre><code>## 
+## Call:  glm(formula = QE ~ nTracks + nShowers + maxtrack + maxshower + 
+##     nHits, family = &quot;binomial&quot;, data = train.set)
+## 
+## Coefficients:
+## (Intercept)      nTracks     nShowers     maxtrack    maxshower        nHits  
+##    0.909562    -0.364809    -0.584352     0.022622     0.004269    -0.002888  
+## 
+## Degrees of Freedom: 56885 Total (i.e. Null);  56880 Residual
+## Null Deviance:       77250 
+## Residual Deviance: 61080     AIC: 61090</code></pre>
 <pre class="r"><code># Curva ROC (Método 1)
 par(pty = &quot;s&quot;) # Para que la gráfica sea cuadrada (square)
 

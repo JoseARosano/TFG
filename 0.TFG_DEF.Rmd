@@ -431,7 +431,6 @@ p5 <- plot.lr(train.set$nHits,"nHits")
 ggarrange(p1,p2,p3,p4,p5, nrow = 2, ncol=3)
 ```
 
-
 ```{r, warning=FALSE}
 # Se entrena el modelo
 modelo.lr <- glm(QE ~ ., data = train.set, family = "binomial")
@@ -440,6 +439,12 @@ cat("-------------------------------------------------\n")
 
 # odds ratios y 95% CI ( media +- 1.96*s/sqrt(n), con n=1 )
 exp(cbind(OR = coef(modelo.lr), confint.default(modelo.lr)))
+```
+
+Aplicando el método de selección paso a paso (stepwise), se confirma el uso de las variables previamente seleccionadas:
+```{r, warning=FALSE}
+# Método step-wise
+step(modelo.lr,direction = "both")
 ```
 
 ```{r}
